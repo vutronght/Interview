@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
-import { Camera, Mic, Wifi, ChevronRight, Video, StopCircle, CheckCircle, AlertCircle, Clock, FileText, PlayCircle } from 'lucide-react';
+import { Camera, Mic, Wifi, ChevronRight, Video, StopCircle, CheckCircle, AlertCircle, Clock, FileText, MonitorPlay, Zap, Armchair, RotateCcw, Calendar, User, Upload, Hourglass, CloudUpload } from 'lucide-react';
 import { Button, Card } from './ui';
 import { InterviewFlow, Recording } from '../types';
 
@@ -9,29 +9,42 @@ interface CandidateViewProps {
 }
 
 enum Step {
-  OVERVIEW,      // New step: Show list of questions
+  INPUT_AGE,     // Step 1: Birth year check
+  INPUT_CV,      // Step 2: Upload CV
+  OVERVIEW,      // Welcome & Process intro (No question list)
   TECH_CHECK,    // Check camera/mic
   INSTRUCTIONS,  // Final confirmation
   QUESTION_INTRO,// Avatar/Text asking question
-  PREP,          // Thinking time
+  PREP,          // 30s Countdown
   RECORDING,     // Recording answer
   UPLOAD,        // Uploading
   FINISHED       // Done
 }
 
 const CandidateView: React.FC<CandidateViewProps> = ({ flow, onComplete }) => {
-  const [step, setStep] = useState<Step>(Step.OVERVIEW);
+  const [step, setStep] = useState<Step>(Step.INPUT_AGE);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [stream, setStream] = useState<MediaStream | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [timeLeft, setTimeLeft] = useState(0);
   const [isRecording, setIsRecording] = useState(false);
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [recordings, setRecordings] = useState<Recording[]>([]);
+  const [uploadProgress, setUploadProgress] = useState(0);
 
-  const videoRef = useRef<HTMLVideoElement>(null);
+  // User Info States
+  const [birthYear, setBirthYear] = useState('');
+  const [ageError, setAgeError] = useState<string | null>(null);
+  const [cvFile, setCvFile] = useState<File | null>(null);
+
+  // Refs
+  const cameraVideoRef = useRef<HTMLVideoElement>(null); // For User Camera
+  const questionVideoRef = useRef<HTMLVideoElement>(null); // For Question Video playback
+  
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   const currentQuestion = flow.questions[currentQuestionIndex];
 
@@ -45,38 +58,50 @@ const CandidateView: React.FC<CandidateViewProps> = ({ flow, onComplete }) => {
     };
   }, [stream]);
 
-  // Connect video element to stream when step changes to TECH_CHECK or RECORDING
+  // Connect video element to stream (Only for Camera steps)
   useEffect(() => {
-    if (videoRef.current && stream && (step === Step.TECH_CHECK || step === Step.RECORDING)) {
-      videoRef.current.srcObject = stream;
+    if (cameraVideoRef.current && stream && (step === Step.TECH_CHECK || step === Step.RECORDING || step === Step.PREP)) {
+      cameraVideoRef.current.srcObject = stream;
     }
   }, [stream, step]);
 
-  const startCamera = async () => {
-    try {
-      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-      setStream(mediaStream);
-      setError(null);
-    } catch (err) {
-      setError("Cannot access camera/microphone. Please check permissions.");
+  // Handle Upload Progress and Transition
+  useEffect(() => {
+    if (step === Step.UPLOAD && uploadProgress >= 100) {
+      const transitionTimer = setTimeout(() => {
+        if (currentQuestionIndex < flow.questions.length - 1) {
+          setCurrentQuestionIndex(prev => prev + 1);
+          setStep(Step.QUESTION_INTRO);
+        } else {
+          setStep(Step.FINISHED);
+          if (stream) {
+            stream.getTracks().forEach(track => track.stop());
+          }
+        }
+      }, 500); // Small delay at 100% before switching
+      return () => clearTimeout(transitionTimer);
     }
-  };
+  }, [step, uploadProgress, currentQuestionIndex, flow.questions.length, stream]);
 
   const handleNext = useCallback(() => {
     setStep(Step.UPLOAD);
-    // Simulate upload delay
-    setTimeout(() => {
-      if (currentQuestionIndex < flow.questions.length - 1) {
-        setCurrentQuestionIndex(prev => prev + 1);
-        setStep(Step.QUESTION_INTRO);
-      } else {
-        setStep(Step.FINISHED);
-        if (stream) {
-          stream.getTracks().forEach(track => track.stop());
+    setUploadProgress(0);
+
+    // Simulate upload progress
+    const progressInterval = setInterval(() => {
+      setUploadProgress(prev => {
+        // Random increment between 2% and 10%
+        const increment = Math.random() * 8 + 2;
+        const nextValue = prev + increment;
+        
+        if (nextValue >= 100) {
+          clearInterval(progressInterval);
+          return 100;
         }
-      }
-    }, 1500);
-  }, [currentQuestionIndex, flow.questions.length, stream]);
+        return nextValue;
+      });
+    }, 200); // Update every 200ms
+  }, []);
 
   const stopRecording = useCallback(() => {
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
@@ -127,64 +152,235 @@ const CandidateView: React.FC<CandidateViewProps> = ({ flow, onComplete }) => {
     }, 1000);
   }, [stream, currentQuestion, handleNext, stopRecording]);
 
-  const startPrep = () => {
-    setStep(Step.PREP);
-    setTimeLeft(currentQuestion.prepTimeSeconds);
-    
-    // Start countdown
-    timerRef.current = setInterval(() => {
-      setTimeLeft((prev) => {
-        if (prev <= 1) {
-          clearInterval(timerRef.current!);
-          startRecording();
-          return 0;
-        }
-        return prev - 1;
-      });
-    }, 1000);
+  // Handle Prep Step Countdown
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>;
+    if (step === Step.PREP) {
+      setTimeLeft(currentQuestion.prepTimeSeconds); // Normal 30s countdown
+      interval = setInterval(() => {
+        setTimeLeft((prev) => {
+          if (prev <= 1) {
+            clearInterval(interval);
+            startRecording(); // Auto start when prep time ends
+            return 0;
+          }
+          return prev - 1;
+        });
+      }, 1000);
+    }
+    return () => clearInterval(interval);
+  }, [step, currentQuestion.prepTimeSeconds, startRecording]);
+
+  const handleAgeVerify = () => {
+    setAgeError(null);
+    const year = parseInt(birthYear);
+    if (isNaN(year) || year < 1900 || year > new Date().getFullYear()) {
+      setAgeError("Vui lòng nhập năm sinh hợp lệ.");
+      return;
+    }
+
+    const currentYear = new Date().getFullYear();
+    const age = currentYear - year;
+
+    if (age >= 20 && age <= 30) {
+      setStep(Step.INPUT_CV);
+    } else {
+      setAgeError(`Rất tiếc, vị trí này yêu cầu độ tuổi từ 20-30. (Tuổi của bạn: ${age})`);
+    }
+  };
+
+  const handleCvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file && file.type === 'application/pdf') {
+      setCvFile(file);
+    } else {
+      alert("Vui lòng chỉ tải lên định dạng PDF.");
+    }
+  };
+
+  const requestPermissionsAndStart = async () => {
+    try {
+      setError(null);
+      // Explicitly request permissions only when this function is called by user interaction
+      const mediaStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+      setStream(mediaStream);
+      setStep(Step.TECH_CHECK);
+    } catch (err) {
+      console.error(err);
+      setError("Không thể truy cập Camera/Micro. Vui lòng kiểm tra quyền truy cập trên trình duyệt.");
+      // Still move to Tech Check screen to show the error UI
+      setStep(Step.TECH_CHECK);
+    }
   };
 
   // --- Renders ---
 
-  // 1. OVERVIEW SCREEN (List of Questions)
-  if (step === Step.OVERVIEW) {
+  // STEP 1: INPUT AGE
+  if (step === Step.INPUT_AGE) {
     return (
-      <div className="space-y-6">
-        <div className="bg-white rounded-xl p-6 shadow-sm border border-slate-200">
-          <h1 className="text-2xl font-bold mb-2">{flow.title}</h1>
-          <div className="flex items-center gap-4 text-slate-500 text-sm mb-6">
-            <span className="flex items-center gap-1"><Clock size={16} /> Est. {Math.round(flow.questions.reduce((acc, q) => acc + q.maxAnswerTimeSeconds + q.prepTimeSeconds, 0) / 60)} mins</span>
-            <span className="flex items-center gap-1"><FileText size={16} /> {flow.questions.length} Questions</span>
-          </div>
-          
-          <div className="space-y-4 mb-8">
-            <h3 className="font-semibold text-slate-700 uppercase text-sm tracking-wide">Interview Structure</h3>
-            {flow.questions.map((q, idx) => (
-              <div key={q.id} className="flex items-start gap-4 p-4 rounded-lg bg-slate-50 border border-slate-200 hover:border-blue-300 transition-colors">
-                <div className="mt-1 w-8 h-8 rounded-full bg-blue-100 text-blue-600 flex items-center justify-center font-bold flex-shrink-0 text-sm">
-                  {idx + 1}
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span className={`text-xs font-bold px-2 py-0.5 rounded ${q.videoUrl ? 'bg-purple-100 text-purple-700' : 'bg-slate-200 text-slate-700'}`}>
-                      {q.videoUrl ? 'VIDEO QUESTION' : 'TEXT QUESTION'}
-                    </span>
-                    <span className="text-xs text-slate-500">Prep: {q.prepTimeSeconds}s | Max Answer: {q.maxAnswerTimeSeconds}s</span>
-                  </div>
-                  <p className="font-medium text-slate-800">{q.text}</p>
-                  {q.videoUrl && (
-                     <div className="mt-2 flex items-center gap-2 text-xs text-purple-600 font-medium">
-                        <PlayCircle size={14} /> Includes Recruiter Video
-                     </div>
-                  )}
-                </div>
-              </div>
-            ))}
+      <div className="max-w-md mx-auto mt-10">
+        <Card className="p-8 shadow-lg">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Calendar size={32} />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900">Xác thực thông tin</h1>
+            <p className="text-slate-500 mt-2">Vui lòng nhập năm sinh của bạn để tiếp tục.</p>
           </div>
 
-          <div className="flex justify-end">
-            <Button onClick={() => setStep(Step.TECH_CHECK)} className="px-8 py-3 text-lg">
-              Start System Check <ChevronRight size={20} className="inline ml-1" />
+          <div className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Năm sinh</label>
+              <input 
+                type="number" 
+                placeholder="Ví dụ: 1998"
+                className="w-full px-4 py-3 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none text-lg text-center tracking-widest"
+                value={birthYear}
+                onChange={(e) => setBirthYear(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleAgeVerify()}
+              />
+            </div>
+            
+            {ageError && (
+              <div className="p-3 bg-red-50 text-red-600 text-sm rounded-lg flex items-center gap-2">
+                <AlertCircle size={16} /> {ageError}
+              </div>
+            )}
+
+            <Button onClick={handleAgeVerify} className="w-full py-3 text-lg" disabled={!birthYear}>
+              Xác nhận
+            </Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // STEP 2: INPUT CV
+  if (step === Step.INPUT_CV) {
+    return (
+      <div className="max-w-md mx-auto mt-10">
+        <Card className="p-8 shadow-lg">
+          <div className="text-center mb-6">
+            <div className="w-16 h-16 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center mx-auto mb-4">
+              <Upload size={32} />
+            </div>
+            <h1 className="text-2xl font-bold text-slate-900">Hồ sơ ứng viên</h1>
+            <p className="text-slate-500 mt-2">Vui lòng tải lên CV của bạn (định dạng PDF).</p>
+          </div>
+
+          <div className="space-y-6">
+            <div 
+              className={`border-2 border-dashed rounded-xl p-8 text-center cursor-pointer transition-colors ${cvFile ? 'border-green-400 bg-green-50' : 'border-slate-300 hover:border-blue-400 hover:bg-slate-50'}`}
+              onClick={() => fileInputRef.current?.click()}
+            >
+              <input 
+                type="file" 
+                ref={fileInputRef} 
+                accept=".pdf" 
+                className="hidden" 
+                onChange={handleCvUpload}
+              />
+              
+              {cvFile ? (
+                <div className="text-green-700">
+                  <FileText size={48} className="mx-auto mb-2" />
+                  <p className="font-semibold">{cvFile.name}</p>
+                  <p className="text-xs text-green-600 mt-1">{(cvFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                  <p className="text-xs mt-2 underline">Nhấn để thay đổi</p>
+                </div>
+              ) : (
+                <div className="text-slate-500">
+                  <Upload size={48} className="mx-auto mb-2 text-slate-300" />
+                  <p className="font-medium">Nhấn để tải lên CV</p>
+                  <p className="text-xs text-slate-400 mt-1">Chỉ chấp nhận file PDF</p>
+                </div>
+              )}
+            </div>
+
+            <Button onClick={() => setStep(Step.OVERVIEW)} className="w-full py-3 text-lg" disabled={!cvFile}>
+              XÁC NHẬN <ChevronRight size={20} className="inline ml-1" />
+            </Button>
+          </div>
+        </Card>
+      </div>
+    );
+  }
+
+  // 1. OVERVIEW SCREEN
+  if (step === Step.OVERVIEW) {
+    return (
+      <div className="max-w-3xl mx-auto space-y-6">
+        <div className="bg-white rounded-2xl p-8 shadow-lg border border-slate-100">
+          <div className="mb-6 border-b border-slate-100 pb-6">
+            <div className="flex justify-between items-start mb-2">
+               <h1 className="text-2xl md:text-3xl font-bold text-slate-900">{flow.title}</h1>
+               <div className="text-right hidden md:block">
+                  <span className="bg-green-100 text-green-800 text-xs px-2 py-1 rounded-full font-bold">Đã xác thực</span>
+               </div>
+            </div>
+            <p className="text-slate-600 mt-2 text-lg">
+              Chào mừng bạn tham gia phỏng vấn vòng một không đồng bộ. Hãy giữ tâm lý thoải mái để hoàn thành bài thi một cách tốt nhất.
+            </p>
+            
+            {/* User Info Summary */}
+            <div className="mt-4 p-3 bg-slate-50 rounded-lg flex items-center gap-4 text-sm text-slate-600 border border-slate-200">
+               <div className="flex items-center gap-2">
+                  <User size={16} className="text-blue-500" />
+                  <span>Tuổi: {new Date().getFullYear() - parseInt(birthYear)}</span>
+               </div>
+               <div className="h-4 w-px bg-slate-300"></div>
+               <div className="flex items-center gap-2">
+                  <FileText size={16} className="text-blue-500" />
+                  <span>CV: {cvFile?.name}</span>
+               </div>
+            </div>
+          </div>
+
+          {/* Stats summary */}
+          <div className="flex flex-wrap gap-4 mb-8">
+            <div className="bg-blue-50 text-blue-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+              <Clock size={16} /> Thời lượng ước tính: {Math.round(flow.questions.reduce((acc, q) => acc + q.maxAnswerTimeSeconds + q.prepTimeSeconds, 0) / 60) + 5} phút
+            </div>
+            <div className="bg-slate-100 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium flex items-center gap-2">
+              <FileText size={16} /> {flow.questions.length} Câu hỏi
+            </div>
+          </div>
+          
+          {/* Prep Instructions */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 hover:border-blue-300 transition-colors">
+                 <div className="w-10 h-10 bg-purple-100 text-purple-600 rounded-full flex items-center justify-center">
+                    <Zap size={20} />
+                 </div>
+                 <h3 className="font-bold text-slate-800">Quy trình phỏng vấn</h3>
+                 <p className="text-sm text-slate-600 leading-relaxed">
+                    Bạn sẽ trả lời lần lượt từng câu hỏi. Mỗi câu hỏi sẽ có thời gian chuẩn bị và thời gian trả lời cố định. Sau khi hoàn thành, hệ thống sẽ tự động chuyển sang câu tiếp theo.
+                 </p>
+             </div>
+             
+             <div className="bg-white p-5 rounded-xl border border-slate-200 shadow-sm flex flex-col gap-3 hover:border-blue-300 transition-colors">
+                 <div className="w-10 h-10 bg-orange-100 text-orange-600 rounded-full flex items-center justify-center">
+                    <Armchair size={20} />
+                 </div>
+                 <h3 className="font-bold text-slate-800">Môi trường & Tâm lý</h3>
+                 <p className="text-sm text-slate-600 leading-relaxed">
+                    Hãy chọn một nơi yên tĩnh, đủ ánh sáng. Giữ tâm lý thoải mái, tự tin như đang trò chuyện trực tiếp. Bạn có thể uống nước trước khi bắt đầu.
+                 </p>
+             </div>
+          </div>
+
+          {/* Warning Block */}
+          <div className="mb-8 p-4 bg-red-50 border border-red-100 rounded-lg text-center">
+            <p className="text-red-600 font-bold text-lg flex items-center justify-center gap-2">
+               <AlertCircle size={24} />
+               Hệ thống sẽ yêu cầu quyền truy cập Camera & Micro.
+            </p>
+          </div>
+
+          <div className="flex justify-center md:justify-end">
+            <Button onClick={requestPermissionsAndStart} className="w-full md:w-auto px-8 py-3.5 text-lg shadow-lg shadow-blue-200">
+              Bắt đầu Kiểm tra Thiết bị <ChevronRight size={20} className="inline ml-1" />
             </Button>
           </div>
         </div>
@@ -196,46 +392,60 @@ const CandidateView: React.FC<CandidateViewProps> = ({ flow, onComplete }) => {
   if (step === Step.TECH_CHECK) {
     return (
       <div className="max-w-2xl mx-auto">
-        <Card className="p-8">
-          <h1 className="text-2xl font-bold mb-4">System Check</h1>
-          <p className="text-slate-600 mb-6">Please ensure your camera and microphone are working correctly before proceeding.</p>
+        <Card className="p-8 shadow-lg">
+          <div className="text-center mb-8">
+            <h1 className="text-2xl font-bold mb-2 text-slate-900">Kiểm tra thiết bị</h1>
+            <p className="text-slate-500">Đảm bảo bạn xuất hiện rõ ràng và âm thanh tốt.</p>
+          </div>
           
-          <div className="bg-black aspect-video rounded-lg mb-6 overflow-hidden relative flex items-center justify-center">
+          <div className="bg-slate-900 aspect-video rounded-xl mb-6 overflow-hidden relative flex items-center justify-center shadow-inner">
             {stream ? (
-              <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover transform scale-x-[-1]" />
+              <video ref={cameraVideoRef} autoPlay muted playsInline className="w-full h-full object-cover transform scale-x-[-1]" />
             ) : (
-              <div className="text-slate-400 flex flex-col items-center">
-                <Camera size={48} className="mb-2" />
-                <p>Camera preview will appear here</p>
+              <div className="text-slate-400 flex flex-col items-center animate-pulse">
+                <Camera size={64} className="mb-4 opacity-50" />
+                <p>Khung hình camera sẽ hiển thị tại đây</p>
               </div>
+            )}
+            
+            {stream && (
+               <div className="absolute bottom-4 left-4 right-4 flex justify-between items-end">
+                  <div className="flex items-center gap-2 bg-black/50 backdrop-blur-sm px-3 py-1 rounded-full text-white text-xs">
+                     <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div> Camera đang hoạt động
+                  </div>
+               </div>
             )}
           </div>
 
-          <div className="flex gap-4 mb-6 justify-center">
-            <div className={`flex items-center gap-2 ${stream ? 'text-green-600' : 'text-slate-400'}`}>
-              <Camera size={20} /> Camera
-            </div>
-            <div className={`flex items-center gap-2 ${stream ? 'text-green-600' : 'text-slate-400'}`}>
-              <Mic size={20} /> Microphone
-            </div>
-            <div className="flex items-center gap-2 text-green-600">
-              <Wifi size={20} /> Internet
-            </div>
+          <div className="grid grid-cols-3 gap-4 mb-8">
+             <div className={`flex flex-col items-center justify-center p-4 rounded-lg border ${stream ? 'bg-green-50 border-green-200 text-green-700' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                <Camera size={24} className="mb-2" />
+                <span className="text-sm font-medium">Camera</span>
+             </div>
+             <div className={`flex flex-col items-center justify-center p-4 rounded-lg border ${stream ? 'bg-green-50 border-green-200 text-green-700' : 'bg-slate-50 border-slate-200 text-slate-400'}`}>
+                <Mic size={24} className="mb-2" />
+                <span className="text-sm font-medium">Microphone</span>
+             </div>
+             <div className="flex flex-col items-center justify-center p-4 rounded-lg border bg-green-50 border-green-200 text-green-700">
+                <Wifi size={24} className="mb-2" />
+                <span className="text-sm font-medium">Kết nối</span>
+             </div>
           </div>
 
           {error && (
-            <div className="bg-red-50 text-red-600 p-4 rounded-lg flex items-center gap-2 mb-6">
-              <AlertCircle size={20} /> {error}
+            <div className="bg-red-50 text-red-600 p-4 rounded-lg flex items-start gap-3 mb-6 border border-red-100">
+              <AlertCircle size={20} className="mt-0.5 flex-shrink-0" /> 
+              <span className="text-sm font-medium">{error}</span>
             </div>
           )}
 
           <div className="flex justify-between items-center">
-             <Button variant="secondary" onClick={() => setStep(Step.OVERVIEW)}>Back</Button>
+             <Button variant="secondary" onClick={() => setStep(Step.OVERVIEW)}>Quay lại</Button>
             {!stream ? (
-              <Button onClick={startCamera}>Enable Camera & Mic</Button>
+              <Button onClick={requestPermissionsAndStart}>Thử lại</Button>
             ) : (
               <Button onClick={() => setStep(Step.INSTRUCTIONS)}>
-                Continue <ChevronRight size={20} className="inline ml-1" />
+                Tiếp tục <ChevronRight size={20} className="inline ml-1" />
               </Button>
             )}
           </div>
@@ -244,30 +454,41 @@ const CandidateView: React.FC<CandidateViewProps> = ({ flow, onComplete }) => {
     );
   }
 
-  // 3. INSTRUCTIONS (Final check before start)
+  // 3. INSTRUCTIONS
   if (step === Step.INSTRUCTIONS) {
     return (
       <div className="max-w-2xl mx-auto">
-        <Card className="p-8">
-          <h1 className="text-2xl font-bold mb-4">Ready to Begin?</h1>
-          <div className="bg-blue-50 p-6 rounded-xl mb-8 space-y-4 text-blue-900">
-             <div className="flex gap-3">
-                 <div className="font-bold">1.</div>
-                 <div>Once started, the process is automated. Don't close the browser window.</div>
+        <Card className="p-8 shadow-lg">
+          <h1 className="text-2xl font-bold mb-6 text-slate-900 text-center">Lưu ý trước khi bắt đầu</h1>
+          
+          <div className="space-y-4 mb-8">
+             <div className="flex gap-4 p-4 bg-blue-50 rounded-xl border border-blue-100 items-start">
+                 <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold flex-shrink-0 mt-1">1</div>
+                 <div>
+                    <h4 className="font-bold text-slate-800 text-sm mb-1">Quy trình tự động</h4>
+                    <p className="text-sm text-slate-600">Khi bấm "Bắt đầu", các câu hỏi sẽ xuất hiện lần lượt. Bạn không thể quay lại câu hỏi trước.</p>
+                 </div>
              </div>
-             <div className="flex gap-3">
-                 <div className="font-bold">2.</div>
-                 <div>You will have <strong>{currentQuestion.prepTimeSeconds} seconds</strong> to think about each answer.</div>
+             <div className="flex gap-4 p-4 bg-blue-50 rounded-xl border border-blue-100 items-start">
+                 <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold flex-shrink-0 mt-1">2</div>
+                 <div>
+                    <h4 className="font-bold text-slate-800 text-sm mb-1">Xem video câu hỏi</h4>
+                    <p className="text-sm text-slate-600">Bạn sẽ xem video câu hỏi, sau đó có thời gian chuẩn bị trước khi ghi hình.</p>
+                 </div>
              </div>
-             <div className="flex gap-3">
-                 <div className="font-bold">3.</div>
-                 <div>If you finish answering early, click the <strong>"Finish Answer"</strong> button.</div>
+             <div className="flex gap-4 p-4 bg-blue-50 rounded-xl border border-blue-100 items-start">
+                 <div className="w-8 h-8 bg-blue-100 text-blue-600 rounded-full flex items-center justify-center font-bold flex-shrink-0 mt-1">3</div>
+                 <div>
+                    <h4 className="font-bold text-slate-800 text-sm mb-1">Gửi câu trả lời sớm</h4>
+                    <p className="text-sm text-slate-600">Nếu trả lời xong trước thời hạn, hãy nhấn nút "Hoàn thành" để chuyển sang câu tiếp theo.</p>
+                 </div>
              </div>
           </div>
+
           <div className="flex justify-between">
-            <Button variant="secondary" onClick={() => setStep(Step.TECH_CHECK)}>Back</Button>
-            <Button onClick={() => setStep(Step.QUESTION_INTRO)} className="w-48 justify-center">
-                I'm Ready
+            <Button variant="secondary" onClick={() => setStep(Step.TECH_CHECK)}>Kiểm tra lại</Button>
+            <Button onClick={() => setStep(Step.QUESTION_INTRO)} className="w-48 justify-center shadow-lg shadow-blue-100">
+                Tôi đã sẵn sàng
             </Button>
           </div>
         </Card>
@@ -278,131 +499,142 @@ const CandidateView: React.FC<CandidateViewProps> = ({ flow, onComplete }) => {
   // 4. FINISHED
   if (step === Step.FINISHED) {
     return (
-      <div className="max-w-xl mx-auto text-center mt-12">
-        <Card className="p-12">
-          <div className="w-20 h-20 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6">
-            <CheckCircle size={40} />
+      <div className="max-w-xl mx-auto text-center mt-8">
+        <Card className="p-12 shadow-xl border-t-4 border-t-green-500">
+          <div className="w-24 h-24 bg-green-100 text-green-600 rounded-full flex items-center justify-center mx-auto mb-6 shadow-inner">
+            <CheckCircle size={48} />
           </div>
-          <h2 className="text-3xl font-bold mb-4 text-slate-800">All Done!</h2>
-          <p className="text-slate-600 mb-8 text-lg">Thank you for completing the interview. Your video responses have been securely uploaded.</p>
-          <div className="p-4 bg-slate-50 rounded-lg text-sm text-slate-500 mb-8">
-            Ref ID: {Date.now().toString(36).toUpperCase()}
+          <h2 className="text-3xl font-bold mb-4 text-slate-800">Hoàn thành xuất sắc!</h2>
+          <p className="text-slate-600 mb-8 text-lg">Cảm ơn bạn đã tham gia phỏng vấn. Video câu trả lời của bạn đã được tải lên hệ thống bảo mật.</p>
+          <div className="p-4 bg-slate-50 rounded-lg text-sm text-slate-500 mb-8 border border-slate-200">
+            Mã tham chiếu: <span className="font-mono font-bold text-slate-700">{Date.now().toString(36).toUpperCase()}</span>
           </div>
-          <Button onClick={onComplete} variant="outline" className="w-full">Return to Home</Button>
+          <Button onClick={onComplete} variant="outline" className="w-full">Quay về trang chủ</Button>
         </Card>
       </div>
     );
   }
 
-  // ACTIVE INTERVIEW WRAPPER (Intro -> Prep -> Record)
+  // ACTIVE INTERVIEW WRAPPER
   return (
-    <div className="max-w-4xl mx-auto h-[calc(100vh-140px)] flex flex-col">
-      <div className="flex justify-between items-center mb-4">
-        <h2 className="font-semibold text-slate-500">Question {currentQuestionIndex + 1} of {flow.questions.length}</h2>
-        <div className="flex gap-1">
-          {flow.questions.map((_, idx) => (
-            <div key={idx} className={`h-2 w-8 rounded-full ${idx <= currentQuestionIndex ? 'bg-blue-600' : 'bg-slate-200'}`} />
-          ))}
+    <div className="max-w-5xl mx-auto h-[calc(100vh-160px)] flex flex-col">
+      {/* Progress Bar */}
+      <div className="flex flex-col gap-2 mb-6">
+        <div className="flex justify-between items-center text-sm font-medium text-slate-600">
+          <span>Câu hỏi {currentQuestionIndex + 1} / {flow.questions.length}</span>
+          <span>{Math.round(((currentQuestionIndex) / flow.questions.length) * 100)}% Hoàn thành</span>
+        </div>
+        <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
+           <div 
+             className="h-full bg-blue-600 transition-all duration-500 ease-out" 
+             style={{ width: `${((currentQuestionIndex) / flow.questions.length) * 100}%` }}
+           ></div>
         </div>
       </div>
 
       <div className="flex-1 flex gap-6 flex-col md:flex-row min-h-0">
-        <Card className="flex-1 relative overflow-hidden flex flex-col bg-slate-900 border-none shadow-xl">
+        <Card className="flex-1 relative overflow-hidden flex flex-col bg-slate-900 border-none shadow-2xl rounded-2xl ring-4 ring-slate-100">
            
-           {/* Step: Question Intro (Avatar or Text) */}
+           {/* Step: Question Intro */}
            {step === Step.QUESTION_INTRO && (
              <div className="absolute inset-0 flex flex-col bg-white">
-                {currentQuestion.videoUrl ? (
-                    <div className="flex-1 relative bg-black">
-                         <video 
-                           src={currentQuestion.videoUrl} 
-                           autoPlay 
-                           controls={false}
-                           className="w-full h-full object-contain"
-                           onEnded={startPrep}
-                         />
-                         <div className="absolute bottom-4 left-4 right-4 bg-black/60 backdrop-blur-md p-4 rounded-lg text-white">
-                             <p className="text-lg font-medium">{currentQuestion.text}</p>
-                         </div>
-                         <Button onClick={startPrep} className="absolute top-4 right-4 bg-white/20 hover:bg-white/40 backdrop-blur-md text-white border-none">Skip Video</Button>
-                    </div>
-                ) : (
-                    <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
-                        <div className="w-20 h-20 bg-blue-100 rounded-full flex items-center justify-center mb-6">
-                           <FileText size={40} className="text-blue-600" />
-                        </div>
-                        <h3 className="text-2xl md:text-3xl font-bold mb-6 text-slate-800 leading-tight">{currentQuestion.text}</h3>
-                        <div className="flex gap-4 text-slate-500">
-                            <span className="bg-slate-100 px-3 py-1 rounded-full text-sm">Prep: {currentQuestion.prepTimeSeconds}s</span>
-                            <span className="bg-slate-100 px-3 py-1 rounded-full text-sm">Answer: {currentQuestion.maxAnswerTimeSeconds}s</span>
-                        </div>
-                    </div>
-                )}
-                
-                {/* Intro Footer Action */}
-                {!currentQuestion.videoUrl && (
-                    <div className="p-6 border-t border-slate-100 flex justify-center bg-slate-50">
-                        <Button onClick={startPrep} className="w-48 py-3 text-lg">Start Preparation</Button>
-                    </div>
-                )}
+                <div className="flex-1 relative bg-black flex flex-col">
+                      <div className="absolute top-4 left-4 z-10 bg-black/60 backdrop-blur text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wider flex items-center gap-2">
+                        <MonitorPlay size={12} /> Câu hỏi từ nhà tuyển dụng
+                      </div>
+                      <video 
+                        ref={questionVideoRef}
+                        src={currentQuestion.videoUrl || "https://commondatastorage.googleapis.com/gtv-videos-bucket/sample/BigBuckBunny.mp4"} 
+                        autoPlay 
+                        controls={false}
+                        className="w-full h-full object-contain"
+                        // Removed automatic transition
+                      />
+                      <div className="bg-white p-6 border-t border-slate-100 flex items-center justify-between gap-4">
+                          <div className="flex items-center gap-4">
+                            <div className="w-10 h-10 rounded-full bg-purple-100 text-purple-600 flex items-center justify-center font-bold flex-shrink-0">
+                                Q{currentQuestionIndex + 1}
+                            </div>
+                            <span className="text-slate-500 font-medium text-sm">Xem video và nhấn Tiếp theo để chuẩn bị trả lời</span>
+                          </div>
+                          <div className="flex gap-3">
+                            <Button onClick={() => setStep(Step.PREP)} variant="primary" className="px-6 flex items-center gap-2">
+                                Tiếp theo <ChevronRight size={18} />
+                            </Button>
+                          </div>
+                      </div>
+                </div>
              </div>
            )}
 
-           {/* Step: Prep Time */}
+           {/* Step: Prep (Countdown) */}
            {step === Step.PREP && (
-             <div className="absolute inset-0 flex flex-col items-center justify-center bg-slate-900 text-white p-8">
-               <div className="relative mb-8">
-                  <svg className="w-40 h-40 transform -rotate-90">
-                     <circle cx="80" cy="80" r="70" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-slate-800" />
-                     <circle cx="80" cy="80" r="70" stroke="currentColor" strokeWidth="8" fill="transparent" className="text-blue-500 transition-all duration-1000 ease-linear" strokeDasharray={440} strokeDashoffset={440 - (440 * timeLeft) / currentQuestion.prepTimeSeconds} />
-                  </svg>
-                  <div className="absolute inset-0 flex items-center justify-center text-5xl font-bold font-mono">
-                      {timeLeft}
+             <>
+               <video ref={cameraVideoRef} autoPlay muted playsInline className="w-full h-full object-cover transform scale-x-[-1] opacity-70" />
+               <div className="absolute inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm z-10 text-white p-8 text-center">
+                  <div className="w-20 h-20 mb-4 bg-white/20 rounded-full flex items-center justify-center backdrop-blur-md border border-white/30">
+                     <Hourglass size={40} className="text-white animate-pulse" />
                   </div>
+                  <h2 className="text-3xl font-bold mb-2">Chuẩn bị trả lời</h2>
+                  <p className="text-white/80 mb-8 max-w-md">Hãy hít thở sâu và suy nghĩ về câu trả lời của bạn. Ghi hình sẽ tự động bắt đầu sau:</p>
+                  
+                  <div className="text-8xl font-mono font-bold tracking-tighter mb-8 tabular-nums">
+                    {timeLeft}
+                  </div>
+                  
+                  <Button onClick={startRecording} variant="primary" className="px-8 py-3 text-lg bg-white text-blue-900 hover:bg-blue-50 border-none shadow-xl">
+                    Trả lời ngay <ChevronRight size={20} className="inline ml-1" />
+                  </Button>
                </div>
-               
-               <p className="text-slate-400 mb-8 uppercase tracking-widest text-sm font-semibold">Preparation Time</p>
-               
-               <div className="max-w-2xl text-center bg-white/10 p-6 rounded-xl backdrop-blur-sm">
-                 <p className="text-xl text-white font-medium leading-relaxed">"{currentQuestion.text}"</p>
-               </div>
-               
-               <Button onClick={() => { if(timerRef.current) clearInterval(timerRef.current); startRecording(); }} className="mt-8 bg-white text-slate-900 hover:bg-slate-200 px-8">
-                 Skip Prep & Record Now
-               </Button>
-             </div>
+             </>
            )}
 
            {/* Step: Recording */}
            {step === Step.RECORDING && (
               <>
-                <video ref={videoRef} autoPlay muted playsInline className="w-full h-full object-cover transform scale-x-[-1]" />
+                <video ref={cameraVideoRef} autoPlay muted playsInline className="w-full h-full object-cover transform scale-x-[-1]" />
                 
-                <div className="absolute top-4 right-4 bg-red-600 text-white px-4 py-2 rounded-full flex items-center gap-3 animate-pulse font-medium shadow-lg">
+                <div className="absolute top-6 right-6 bg-red-600/90 backdrop-blur text-white px-4 py-2 rounded-full flex items-center gap-3 animate-pulse font-bold shadow-lg border border-red-500 z-20">
                   <div className="w-3 h-3 bg-white rounded-full"></div>
-                  {timeLeft}s remaining
+                  REC • {timeLeft}s
                 </div>
 
-                <div className="absolute bottom-0 left-0 right-0 p-8 bg-gradient-to-t from-black/90 to-transparent flex flex-col items-center">
-                   <div className="bg-black/40 backdrop-blur-md text-white p-4 rounded-xl max-w-2xl w-full text-center mb-6 border border-white/10">
-                      <p className="text-lg font-medium">{currentQuestion.text}</p>
-                   </div>
-                   <Button onClick={stopRecording} variant="danger" className="flex items-center gap-2 px-8 py-4 rounded-full text-lg shadow-xl hover:scale-105 transition-transform">
-                     <StopCircle size={24} /> Finish Answer
+                <div className="absolute bottom-0 left-0 right-0 p-8 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex flex-col items-center z-20">
+                   <Button onClick={stopRecording} variant="danger" className="flex items-center gap-3 px-10 py-4 rounded-full text-lg shadow-xl shadow-red-900/20 hover:scale-105 transition-transform border-2 border-red-500">
+                     <StopCircle size={24} fill="currentColor" /> Hoàn thành câu trả lời
                    </Button>
                 </div>
               </>
            )}
 
-           {/* Step: Uploading */}
+           {/* Step: Uploading - Progress Bar */}
            {step === Step.UPLOAD && (
-             <div className="absolute inset-0 flex flex-col items-center justify-center bg-white">
-               <div className="relative w-20 h-20 mb-6">
-                   <div className="absolute inset-0 border-4 border-slate-200 rounded-full"></div>
-                   <div className="absolute inset-0 border-4 border-blue-600 rounded-full border-t-transparent animate-spin"></div>
+             <div className="absolute inset-0 flex flex-col items-center justify-center bg-white z-50 p-8">
+               <div className="w-24 h-24 mb-6 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center animate-bounce">
+                  <CloudUpload size={48} />
                </div>
-               <h3 className="text-xl font-bold text-slate-800 mb-2">Saving your response...</h3>
-               <p className="text-slate-500">Please do not close this window.</p>
+               
+               <h3 className="text-2xl font-bold text-slate-800 mb-2">Đang tải lên máy chủ...</h3>
+               
+               <div className="w-full max-w-md mt-6">
+                  <div className="flex justify-between text-sm font-medium text-slate-600 mb-2">
+                     <span>Tiến trình</span>
+                     <span>{Math.round(uploadProgress)}%</span>
+                  </div>
+                  <div className="h-4 w-full bg-slate-100 rounded-full overflow-hidden border border-slate-200">
+                     <div 
+                        className="h-full bg-blue-600 transition-all duration-300 ease-out relative overflow-hidden" 
+                        style={{ width: `${uploadProgress}%` }}
+                     >
+                        <div className="absolute inset-0 bg-white/20 animate-[shimmer_2s_infinite] bg-gradient-to-r from-transparent via-white/30 to-transparent -translate-x-full"></div>
+                     </div>
+                  </div>
+               </div>
+
+               <p className="text-slate-500 mt-6 text-sm flex items-center gap-2">
+                  <AlertCircle size={14} />
+                  Vui lòng không tắt trình duyệt trong quá trình tải lên.
+               </p>
              </div>
            )}
         </Card>
