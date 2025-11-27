@@ -1,0 +1,8 @@
+{
+  "name": "AsyncInterview Pro",
+  "description": "A professional asynchronous video interview platform connecting candidates and recruiters seamlessly.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
